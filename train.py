@@ -9,7 +9,7 @@ import os
 # Set number of threads to available CPU cores for faster calculation
 # Default to 4 if cpu_count is unavailable
 cpu_count = os.cpu_count()
-torch.set_num_threads(cpu_count or 4)
+torch.set_num_threads((cpu_count - 1 if cpu_count > 1 else 1))
 
 print(f"CPU count:", cpu_count)
 
