@@ -311,7 +311,6 @@ class SnakeGameAI:
 
             if y + box_h + 4 < self.h:
                 y += box_h + 4
-                print("abc")
             else: x_offset += box_w + 4; y = start_y
 
     def _move(self, action):
