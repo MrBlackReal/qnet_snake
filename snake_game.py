@@ -1,3 +1,4 @@
+# snake_game.py
 import pygame
 import random
 from enum import Enum
@@ -6,9 +7,26 @@ import numpy as np
 
 Point = namedtuple("Point", "x, y")
 
-DEBUG_WIDTH = 300
 BLOCK_SIZE = 20
-SPEED = 60
+DEBUG_WIDTH = 20 * BLOCK_SIZE
+
+FAST_SPEED = 1000
+SLOW_SPEED = 1000 / 144
+
+W_WIDTH = 800
+W_HEIGHT = 600
+
+MAX_STEPS = 10
+VISION_DIRECTIONS = [
+    (20, 0),
+    (-20, 0),
+    (0, 20),
+    (0, -20),
+    (20, 20),
+    (20, -20),
+    (-20, 20),
+    (-20, -20),
+]
 
 
 class Direction(Enum):
@@ -19,9 +37,9 @@ class Direction(Enum):
 
 
 class SnakeGameAI:
-    def __init__(self, w=800, h=600, num_food=10):
+    def __init__(self, w=W_WIDTH, h=W_HEIGHT, num_food=5):
         pygame.font.init()
-        pygame.display.set_caption("Snake AI Training")
+        pygame.display.set_caption("Snake AI")
 
         self.w = w
         self.h = h
@@ -30,35 +48,30 @@ class SnakeGameAI:
         self.clock = pygame.time.Clock()
         self.reset()
         self.debug_info = {}
-        self.render = True
+        self._render = True
+        self._slowed = False
         self.font = pygame.font.SysFont("Verdana", 16)
+        self.last_direction = Direction.RIGHT
 
-        self.fruit_image = pygame.image.load("assets/apple.png").convert_alpha()
-        self.fruit_image = pygame.transform.scale(self.fruit_image, (BLOCK_SIZE, BLOCK_SIZE))
-
-        self.food_images = [pygame.image.load("assets/apple.png").convert_alpha(), pygame.image.load("assets/cooked_beef.png").convert_alpha()]
-
-        img = self.food_images.pop()
-        while img is not None:
-            self.food_images.append()
-            img = pygame.transform.scale(self.food_images.pop(), (BLOCK_SIZE, BLOCK_SIZE))
-
-        for img in self.food_images:
-            img = self.food_images.pop()
-            img = pygame.transform.scale(img, (BLOCK_SIZE, BLOCK_SIZE))
-
+        self.food_images = [
+            pygame.transform.scale(pygame.image.load(
+                "assets/apple.png").convert_alpha(), (BLOCK_SIZE, BLOCK_SIZE)),
+            pygame.transform.scale(pygame.image.load(
+                "assets/cooked_beef.png").convert_alpha(), (BLOCK_SIZE, BLOCK_SIZE))
+        ]
 
     def reset(self):
-        self.direction = Direction.RIGHT
-        self.head = Point(self.w / 2, self.h / 2)
+        self.last_direction = self.direction = Direction.RIGHT
+        self.old_head = self.head = Point(self.w / 2, self.h / 2)
         self.snake = [
             self.head,
             Point(self.head.x - BLOCK_SIZE, self.head.y),
+            Point(self.head.x - BLOCK_SIZE * 2, self.head.y),
         ]
-        self.did_boost = False
         self.steps_since_food = 0
         self.old_head = self.head
         self.score = 0
+        self.last_score = 0
         self.foods = []
 
         for _ in range(self.num_food):
@@ -70,84 +83,77 @@ class SnakeGameAI:
         x = random.randint(0, (self.w - BLOCK_SIZE) // BLOCK_SIZE) * BLOCK_SIZE
         y = random.randint(0, (self.h - BLOCK_SIZE) // BLOCK_SIZE) * BLOCK_SIZE
         food = Point(x, y)
+
         if food in self.snake or food in self.foods:
             self._place_food()
         else:
             self.foods.append(food)
 
+    def _shutdown(self):
+        pygame.quit()
+        quit()
+
     def play_step(self, action):
         self.frame_iteration += 1
-        self.steps_since_food += 1
+        self.last_score = self.score
 
-        # 1. Collect user input
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                quit()
+            if event.type == pygame.KEYDOWN:
+                pressed = pygame.key.get_pressed()
+                if pressed[pygame.K_ESCAPE]:
+                    self._shutdown()
+                if pressed[pygame.K_INSERT]:
+                    self._render = not self._render
+                if pressed[pygame.K_UP]:
+                    self._slowed = not self._slowed
+            elif event.type == pygame.QUIT:
+                self._shutdown()
 
-        # 2. Move
+        # Move snake
         self._move(action)
         self.snake.insert(0, self.head)
+        self.steps_since_food += 1
 
-        # 3. Check if game over
-        reward = 0
+        changed_direction = (self.direction != self.last_direction)
+
+        # Check state
         game_over = False
-        if self.is_collision() or self.frame_iteration > 100 * len(self.snake):
+        if self.is_collision() or self.frame_iteration > len(self.snake) * 500:
             game_over = True
-            reward = -10
-            return reward, game_over, self.score
+            # Returns: done, score, food_eaten, changed_direction
+            return game_over, self.score, False, changed_direction
 
-        # 4. Place new food or just move
         food_eaten = False
         for i, food in enumerate(self.foods):
             if self.head == food:
-                self.score += 1
-                reward = 10
                 self.foods.pop(i)
                 self._place_food()
+
+                self.score += 1
+
                 food_eaten = True
+
+                self.steps_since_food = 0
                 break
 
         if not food_eaten:
             self.snake.pop()
-        else:
-            speed_bonus = max(0, 5 - self.steps_since_food) * 0.5
-            reward += speed_bonus
-            self.steps_since_food = 0
 
-        closest_food = min(
-            self.foods, key=lambda f: abs(f.x - self.head.x) + abs(f.y - self.head.y)
-        )
-
-        old_dist = abs(self.old_head.x - closest_food.x) + abs(
-            self.old_head.y - closest_food.y
-        )
-        new_dist = abs(self.head.x - closest_food.x) + abs(self.head.y - closest_food.y)
-
-        if new_dist < old_dist:
-            reward += 0.2
-        else:
-            reward -= 0.2
-
-        if self.did_boost and len(self.snake) > 3:
-            self.snake.pop()
-            reward += 0.5
-
-        if self.did_boost and len(self.snake) <= 3:
-            reward -= 1.2  # discourage suicidal boosting
-
-        # 5. Update UI and clock
-        if self.render:
+        if self._render:
             self._update_ui()
-            self.clock.tick(SPEED)
+            self.clock.tick(SLOW_SPEED if self._slowed else FAST_SPEED)
 
-        # 6. Return game over and score
-        return reward, game_over, self.score
+        return game_over, self.score, food_eaten, changed_direction
 
     def is_collision(self, pt=None):
         if pt is None:
             pt = self.head
-        # Hits boundary
+
+        # Hits itself
+        if pt in self.snake[1:]:
+            return True
+
+        # world boundary
         if (
             pt.x > self.w - BLOCK_SIZE
             or pt.x < 0
@@ -155,9 +161,7 @@ class SnakeGameAI:
             or pt.y < 0
         ):
             return True
-        # Hits itself
-        if pt in self.snake[1:]:
-            return True
+
         return False
 
     def _update_ui(self):
@@ -169,7 +173,8 @@ class SnakeGameAI:
                 pygame.draw.rect(
                     self.display,
                     color,
-                    pygame.Rect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE),
+                    pygame.Rect(x * BLOCK_SIZE, y * BLOCK_SIZE,
+                                BLOCK_SIZE, BLOCK_SIZE),
                 )
 
         snake_parts = enumerate(self.snake)
@@ -178,39 +183,27 @@ class SnakeGameAI:
 
         for i, pt in snake_parts:
             # Gradient blue color for snake body
-            clr = 100 if i == 0 else 0
+            v = 100 if i == 0 else 0
+            a = (i + 1) / snake_len
+            clr = (v, v, 255 - (200 * a))
 
-            pygame.draw.rect(
-                self.display,
-                (clr, clr, 255 - (200 * (i + 1) // snake_len)),
-                pygame.Rect(pt.x, pt.y, BLOCK_SIZE, BLOCK_SIZE),
-            )
+            pygame.draw.circle(self.display, clr, (pt.x + BLOCK_SIZE // 2, pt.y + BLOCK_SIZE // 2), BLOCK_SIZE * 0.4)
 
-        for dx, dy in [
-            (20, 0),
-            (-20, 0),
-            (0, 20),
-            (0, -20),
-            (20, 20),
-            (20, -20),
-            (-20, 20),
-            (-20, -20),
-        ]:
+        for dx, dy in VISION_DIRECTIONS:
             pygame.draw.line(
                 self.display,
                 (0, 1, 0),
                 (snake_head.x + 10, snake_head.y + 10),
-                (snake_head.x + dx * 6, snake_head.y + dy * 6),
+                (snake_head.x + dx * MAX_STEPS, snake_head.y + dy * MAX_STEPS),
                 1,
             )
 
         # Draw all food items
+        counter = 0
         for food in self.foods:
-            pygame.draw.rect(
-                self.display,
-                (255, 0, 0),
-                pygame.Rect(food.x, food.y, BLOCK_SIZE, BLOCK_SIZE),
-            )
+            self.display.blit(self.food_images[counter & 1], pygame.Rect(
+                food.x, food.y, BLOCK_SIZE, BLOCK_SIZE))
+            counter += 1
 
         self.draw_debug_panel()
 
@@ -226,7 +219,12 @@ class SnakeGameAI:
         if not self.debug_info:
             return
 
-        self.draw_text(f"Epsilon: {self.debug_info['epsilon']:.2f}", x_offset, y)
+        self.draw_text(
+            f"Epsilon: {self.debug_info['epsilon']:.2f}", x_offset, y)
+        y += 18
+
+        self.draw_text(
+            f"Score/High: {self.debug_info['score']}/{self.debug_info['high_score']}", x_offset, y)
         y += 18
 
         reward = self.debug_info.get("reward", 0)
@@ -249,24 +247,32 @@ class SnakeGameAI:
 
         if q is not None:
             for i, qv in enumerate(q):
-                text = ["Straight", "Right", "Left", "Boost"][i]
+                text = ["Straight", "Right", "Left"][i]
                 color = (
-                    (0, 255, 0) if self.debug_info["action"] == i else (200, 200, 200)
+                    (0, 255, 0) if self.debug_info["action"] == i else (
+                        200, 200, 200)
                 )
                 self.draw_text(f"{text}: {q[i]:.2f}", x_offset, y, color)
                 y += 18
 
-        self.draw_text(f"Chosen Action: {self.debug_info['action']}", x_offset, y)
+        self.draw_text(
+            f"Chosen Action: {self.debug_info['action']}", x_offset, y)
         y += 18
 
+        loss = self.debug_info.get("loss", None)
+        if loss is not None:
+            self.draw_text(f"Loss: {loss:.4f}", x_offset, y)
+            y += 18
+
         groups = [
-            ("Vision Rays", 24),
-            ("Head Pos", 2),
-            ("Body Size", 2),
-            ("Tail Pos", 2),
-            ("Direction", 2),
-            ("Food Vec", 2),
-            ("Boost", 1)
+            ("Vision Rays", 24),    # 8 directions * 3 values
+            ("Direction", 2),       # dir x, dir y
+            ("Head Pos", 2),        # tail relative to head
+            ("Body Size", 1),       
+            ("Tail Pos", 2),        # dir_x, dir_y
+            ("Food Vector", 2),     # food relative to head
+            #("Head Delta", 6),
+            #("Tail Delta", 6)
         ]
 
         self.draw_text("State Heatmap:", x_offset, y)
@@ -275,13 +281,13 @@ class SnakeGameAI:
         state = self.debug_info["state"]
 
         idx = 0
-        cols = 6
+        cols = 3
         cell = 18
         spacing = 2
 
         for name, length in groups:
             self.draw_text(name, x_offset, y)
-            y += 20
+            y += 22
 
             start_y = y
 
@@ -301,32 +307,29 @@ class SnakeGameAI:
                 (80, 80, 80),
                 (x_offset - 4, start_y - 4, box_w + 6, box_h + 6),
                 1
-            )
+            )  
 
-            y += box_h + 10
-
+            if y + box_h + 4 < self.h:
+                y += box_h + 4
+                print("abc")
+            else: x_offset += box_w + 4; y = start_y
 
     def _move(self, action):
-        clock_wise = [Direction.RIGHT, Direction.DOWN, Direction.LEFT, Direction.UP]
+        clock_wise = [Direction.RIGHT, Direction.DOWN,
+                      Direction.LEFT, Direction.UP]
         idx = clock_wise.index(self.direction)
 
-        boost = False
-
-        if np.array_equal(action, [1, 0, 0, 0]):
+        if np.array_equal(action, [1, 0, 0]):
             new_dir = clock_wise[idx]
-        elif np.array_equal(action, [0, 1, 0, 0]):
+        elif np.array_equal(action, [0, 1, 0]):
             new_dir = clock_wise[(idx + 1) % 4]
-        elif np.array_equal(action, [0, 0, 1, 0]):
+        elif np.array_equal(action, [0, 0, 1]):
             new_dir = clock_wise[(idx - 1) % 4]
-        else:
-            new_dir = clock_wise[idx]
-            boost = True
 
         self.direction = new_dir
-        self.did_boost = boost
         self.old_head = self.head
 
-        step = BLOCK_SIZE * (2 if boost else 1)
+        step = BLOCK_SIZE
 
         x, y = self.head.x, self.head.y
 
@@ -341,15 +344,11 @@ class SnakeGameAI:
 
         self.head = Point(x, y)
 
-        if self.old_head is None:
-            self.old_head = self.head
-
     def draw_text(self, text, x, y, color=(255, 255, 255)):
         img = self.font.render(text, True, color)
         self.display.blit(img, (x, y))
 
     def draw_heatmap_cell(self, x, y, value, size=18):
-        # Clamp value for visualization
         v = np.tanh(value)
 
         if v >= 0:
@@ -359,4 +358,5 @@ class SnakeGameAI:
 
         pygame.draw.rect(self.display, color, pygame.Rect(x, y, size, size))
 
-        pygame.draw.rect(self.display, (40, 40, 40), pygame.Rect(x, y, size, size), 1)
+        pygame.draw.rect(self.display, (40, 40, 40),
+                         pygame.Rect(x, y, size, size), 1)
