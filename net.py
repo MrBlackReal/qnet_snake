@@ -44,27 +44,42 @@ class Linear_QNet(nn.Module):
 
 
 class Conv_QNet(nn.Module):
-    def __init__(self, board_w, board_h, hiddem_size=256, output_size=3):
+    def __init__(self, board_w, board_h, hidden_size=256, output_size=3):
         super().__init__()
         # Input shape: (3, board_h, board_w)
         self.conv1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
 
         # Calculate flattened size dynamically
-        # For board 800x600 with BLOCK_SIZE 20, w=40, h=30
-        self.flat_features = 64 * board_w * board_h
+        # Create a dummy input to pass through the convolutional layers
+        # to get the exact output size.
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 3, board_h, board_w)
+            x = self.pool1(F.relu(self.conv1(dummy_input)))
+            x = self.pool2(F.relu(self.conv2(x)))
+            x = self.pool3(F.relu(self.conv3(x)))
+            self.flat_features = x.view(1, -1).size(1)
 
-        self.fc1 = nn.Linear(self.flat_features, hiddem_size)
-        self.fc2 = nn.Linear(hiddem_size, output_size)
+        self.fc1 = nn.Linear(self.flat_features, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
         # x shape: (Batch, 3, H, W)
         x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        x = self.pool1(x)
         
-        # FIX: Flatten everything after the batch dimension
+        x = F.relu(self.conv2(x))
+        x = self.pool2(x)
+        
+        x = F.relu(self.conv3(x))
+        x = self.pool3(x)
+        
         x = x.reshape(x.size(0), -1) 
         x = F.relu(self.fc1(x))
         

@@ -88,7 +88,7 @@ def train():
             # If we haven't beaten the record in 80 games, spike entropy
             if stagnation_counter > 75:
                 # Force random moves to break loops, but max 1.0
-                agent.epsilon = 0.01 + 0.02 * np.exp(-agent.n_games / 500)
+                agent.epsilon += 0.01 + 0.02 * np.exp(-agent.n_games / 500)
                 print(
                     f"Stagnation detected: Boosting exploration to {agent.epsilon:.2f}!")
                 stagnation_counter = 0

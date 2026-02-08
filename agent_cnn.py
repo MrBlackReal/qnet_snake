@@ -6,24 +6,25 @@ import torch.optim as optim
 from collections import deque
 from snake_game import Direction, Point, BLOCK_SIZE, W_WIDTH, W_HEIGHT
 from net import Conv_QNet
-from utils import manhattan_distance, manhattan_distance_blocks
+from utils import manhattan_distance, manhattan_distance_blocks, get_accessible_area
 
 from config import MAX_MEMORY, BATCH_SIZE, LR
 
 class QTrainerCNN:
-    def __init__(self, model, target_model, lr, gamma):
+    def __init__(self, model, target_model, lr, gamma, device):
         self.model = model
         self.target_model = target_model
         self.gamma = gamma
+        self.device = device
         self.optimizer = optim.Adam(model.parameters(), lr=lr)
         self.criterion = nn.MSELoss()
         self.last_loss = 0.0
 
     def train_step(self, state, action, reward, next_state, done):
-        state = torch.tensor(np.array(state), dtype=torch.float)
-        next_state = torch.tensor(np.array(next_state), dtype=torch.float)
-        action = torch.tensor(np.array(action), dtype=torch.long)
-        reward = torch.tensor(np.array(reward), dtype=torch.float)
+        state = torch.tensor(np.array(state), dtype=torch.float).to(self.device)
+        next_state = torch.tensor(np.array(next_state), dtype=torch.float).to(self.device)
+        action = torch.tensor(np.array(action), dtype=torch.long).to(self.device)
+        reward = torch.tensor(np.array(reward), dtype=torch.float).to(self.device)
 
         # Handle single-sample inputs (when training short memory)
         # State shape for CNN is (3, H, W), so len == 3 means single sample
@@ -32,6 +33,7 @@ class QTrainerCNN:
             next_state = next_state.unsqueeze(0)
             action = action.unsqueeze(0)
             reward = reward.unsqueeze(0)
+            # done is a tuple, no tensor conversion needed for logic, but for loop it is
             done = (done,)
 
         pred = self.model(state)
@@ -69,6 +71,8 @@ class CNNAgent:
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.99
         self.gamma = gamma
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        print(f"Using device: {self.device}")
         
         # Grid dimensions for the CNN
         self.board_w = w_width // BLOCK_SIZE
@@ -79,13 +83,13 @@ class CNNAgent:
         # Initialize CNN Models
         # Output size 3 (Straight, Right, Left) or 4 (Up, Down, Left, Right)?
         # The original Agent uses relative directions [Straight, Right, Left]
-        self.model = Conv_QNet(self.board_w, self.board_h, output_size=3)
-        self.target_model = Conv_QNet(self.board_w, self.board_h, output_size=3)
+        self.model = Conv_QNet(self.board_w, self.board_h, output_size=3, hidden_size=128).to(self.device)
+        self.target_model = Conv_QNet(self.board_w, self.board_h, output_size=3, hidden_size=128).to(self.device)
         
         self.target_model.load_state_dict(self.model.state_dict())
         self.target_model.eval()
 
-        self.trainer = QTrainerCNN(self.model, self.target_model, lr=LR, gamma=self.gamma)
+        self.trainer = QTrainerCNN(self.model, self.target_model, lr=LR, gamma=self.gamma, device=self.device)
         
         self.head_history = deque(maxlen=4)
         
@@ -124,31 +128,55 @@ class CNNAgent:
 
     def compute_reward(self, game, done, food_eaten, changed_direction):
         if done:
-            return -20.0
+            return -100.0
 
         reward = 0.0
         head = game.snake[0]
 
+        # 1. Food Reward
         if food_eaten:
-            reward += 8.0
+            reward += 10.0
 
-        reward += 0.01
+        # 2. Step Penalty (Starvation)
+        reward -= 0.01
 
-        if changed_direction:
-            reward -= 0.02
-        else:
-            reward += 0.01
-
-        free_neighbors = 0
+        # 3. Distance Reward/Penalty
+        food = min(game.foods, key=lambda f: abs(f.x - head.x) + abs(f.y - head.y))
+        dist_old = manhattan_distance_blocks(food, game.old_head)
+        dist_new = manhattan_distance_blocks(food, head)
         
-        for dx, dy in [(BLOCK_SIZE, 0), (-BLOCK_SIZE, 0), (0, BLOCK_SIZE), (0, -BLOCK_SIZE)]:
-            pt = Point(head.x + dx, head.y + dy)
-            if not game.is_collision(pt):
-                free_neighbors += 1
+        if dist_new < dist_old:
+            reward += 0.1
+        elif dist_new > dist_old:
+            reward -= 0.15
+        
+        # 4. Circular Motion
+        reward += self.circular_motion_penalty() * 2.0
 
-        reward += 0.03 * (free_neighbors / 4.0)
-        game.debug_info["free_neighbors"] = free_neighbors
+        # 5. Trapping / Encapsulation Check (Flood Fill)
+        # We need to construct a set of obstacles. 
+        # The head itself should not be an obstacle for the starting point of BFS,
+        # but the rest of the body is.
+        obstacles = set(game.snake[1:])
+        
+        # Limit 60 is enough to know we are "free"
+        safe_threshold = 20
+        accessible = get_accessible_area(head, obstacles, game.w, game.h, limit=60)
+        
+        game.debug_info["free_neighbors"] = accessible # Update debug display
 
+        if accessible < safe_threshold:
+            # Penalize progressively as space shrinks.
+            # If accessible is 0 (fully trapped), penalty is severe.
+            # Formula: -10 * (percent_trapped)
+            penalty_factor = (safe_threshold - accessible) / safe_threshold
+            reward -= 10.0 * penalty_factor
+            
+            # Also add a specific panic penalty if it's really tight (< 5)
+            if accessible < 5:
+                reward -= 5.0
+
+        # 6. Wall Avoidance (soft penalty for hugging walls unnecessarily)
         dist_to_wall = min(
             head.x,
             game.w - BLOCK_SIZE - head.x,
@@ -156,26 +184,10 @@ class CNNAgent:
             game.h - BLOCK_SIZE - head.y
         )
         dist_blocks = dist_to_wall / BLOCK_SIZE
-        reward -= 0.05 * (1.0 if dist_blocks <= 1 else (1.0 / (dist_blocks + 1.0)))
+        if dist_blocks < 1:
+            reward -= 0.1
 
-        tail = game.snake[-1]
-        manhattan_tail_blocks = manhattan_distance_blocks(head, tail)
-        if manhattan_tail_blocks < 4:
-            reward -= 0.08 * (1.0 - (manhattan_tail_blocks / 4.0))
-
-        grid_w = game.w / BLOCK_SIZE
-        grid_h = game.h / BLOCK_SIZE
-        max_grid = grid_w + grid_h
-        food = min(game.foods, key=lambda f: abs(f.x - head.x) + abs(f.y - head.y))
-        
-        dist_old = manhattan_distance_blocks(food, game.old_head)
-        dist_new = manhattan_distance_blocks(food, head)
-        delta = (dist_old - dist_new) / max_grid
-        reward += float(np.clip(delta * 1.0, -0.3, 0.3))
-
-        reward += self.circular_motion_penalty() * 0.6
-
-        return float(np.clip(reward, -10.0, 10.0))
+        return float(np.clip(reward, -100.0, 100.0))
 
     def get_state(self, game):
         """
@@ -242,11 +254,11 @@ class CNNAgent:
         if random.random() < self.epsilon:
             move = random.randint(0, 2)
         else:
-            state_tensor = torch.tensor(state, dtype=torch.float).unsqueeze(0) # Add batch dim
+            state_tensor = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(self.device) # Add batch dim
             prediction = self.model(state_tensor)
             move = torch.argmax(prediction).item()
             
-            self.last_prediction = prediction.detach().numpy()[0] # Store for debug
+            self.last_prediction = prediction.cpu().detach().numpy()[0] # Store for debug
             self.last_action = move
 
         final_move[move] = 1
