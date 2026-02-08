@@ -9,10 +9,7 @@ from snake_game import Direction, Point, VISION_DIRECTIONS, MAX_STEPS, BLOCK_SIZ
 from net import Linear_QNet, Conv_QNet
 from utils import manhattan_distance, manhattan_distance_blocks
 
-MAX_MEMORY = 100_000
-BATCH_SIZE = 512
-LR = 0.0005
-
+from config import MAX_MEMORY, BATCH_SIZE, LR
 
 class QTrainer:
     def __init__(self, model, target_model, lr, gamma):

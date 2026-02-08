@@ -1,19 +1,14 @@
-# train.py
-from agent import Agent
+from agent_cnn import CNNAgent
 from snake_game import SnakeGameAI
 from collections import deque
 import numpy as np
 import torch
 import os
 
-from config import MAX_MEMORY, BATCH_SIZE, LR
-
 # Set number of threads to available CPU cores for faster calculation
 # Default to 4 if cpu_count is unavailable
-cpu_count = os.cpu_count()
-torch.set_num_threads((cpu_count - 1 if cpu_count > 1 else 1))
+torch.set_num_threads(os.cpu_count() or 4)
 
-print(f"CPU count:", cpu_count)
 
 def train():
     record = 0
@@ -21,12 +16,17 @@ def train():
     loss_window = deque(maxlen=100)
 
     stagnation_counter = 0
-    last_best_score = 0
+    
+    # Initialize CNN Agent
+    agent = CNNAgent()
+    
+    # Ensure distinct model file for CNN
+    model_name = "best_model_cnn.pth"
+    
+    # Try to load existing CNN model
+    agent.model.load(model_name)
 
-    agent = Agent()
     game = SnakeGameAI(num_food=10)
-
-    agent.model.load("best_model.pth")
 
     while True:
         state_old = agent.get_state(game)
@@ -35,11 +35,16 @@ def train():
         # Perform step and get game flags
         done, score, food_eaten, changed_direction = game.play_step(final_move)
 
-        # Calculate reward in one place
+        # Calculate reward
         reward = agent.compute_reward(
             game, done, food_eaten, changed_direction)
 
         state_new = agent.get_state(game)
+        
+        # Create a dummy state vector for the debug panel to prevent crashes
+        # The debug panel expects a flat list of ~33 features (vision rays, etc.)
+        # which don't exist in the CNN representation.
+        dummy_debug_state = [0] * 50
 
         # Update Debug Info
         game.debug_info = {
@@ -47,11 +52,11 @@ def train():
             'reward': reward,
             'q_values': agent.last_prediction if agent.last_prediction is not None else [0, 0, 0],
             'action': np.argmax(final_move),
-            'state': state_old,
+            'state': dummy_debug_state, # Pass dummy state to keep UI happy
             'loss': agent.last_loss,
             "score": score,
             "high_score": record,
-            "free_neighbors": 0
+            "free_neighbors": game.debug_info.get("free_neighbors", 0)
         }
 
         # Training
@@ -72,7 +77,10 @@ def train():
             avg_score = sum(score_window) / len(score_window)
 
             loss_window.append(game.debug_info["loss"])
-            avg_loss = sum(loss_window) / len(loss_window)
+            if len(loss_window) > 0:
+                avg_loss = sum(loss_window) / len(loss_window)
+            else:
+                avg_loss = 0
 
             if record < score:
                 record = score
@@ -81,12 +89,12 @@ def train():
                 game.debug_info["high_score"] = record
 
                 stagnation_counter = 0
-                agent.model.save(f"best_model.pth")
+                agent.model.save(model_name)
             else:
                 stagnation_counter += 1
 
-            # If we haven't beaten the record in 80 games, spike entropy
-            if stagnation_counter > 75:
+            # If we haven't beaten the record in 69 games, spike entropy
+            if stagnation_counter > 69:
                 # Force random moves to break loops, but max 1.0
                 agent.epsilon = 0.01 + 0.02 * np.exp(-agent.n_games / 500)
                 print(
@@ -94,7 +102,7 @@ def train():
                 stagnation_counter = 0
 
             if agent.n_games % 100 == 0:
-                agent.model.save(f"{agent.n_games}_model.pth")
+                agent.model.save(f"{agent.n_games}_model_cnn.pth")
 
             print(f"Game {agent.n_games} | Score {score}/{record} | Avg100 {avg_score:.4f} | AvgLoss100 {avg_loss:.3f} | Stagnation {stagnation_counter} | Eps {agent.epsilon:.3f}")
 

@@ -13,8 +13,8 @@ DEBUG_WIDTH = 20 * BLOCK_SIZE
 FAST_SPEED = 1000
 SLOW_SPEED = 1000 / 144
 
-W_WIDTH = 800
-W_HEIGHT = 600
+W_WIDTH = 800 // 2
+W_HEIGHT = 600 // 2
 
 MAX_STEPS = 10
 VISION_DIRECTIONS = [
@@ -62,7 +62,12 @@ class SnakeGameAI:
 
     def reset(self):
         self.last_direction = self.direction = Direction.RIGHT
-        self.old_head = self.head = Point(self.w / 2, self.h / 2)
+        
+        # Ensure head is aligned with grid even if W/H aren't perfect multiples
+        x = (self.w // 2 // BLOCK_SIZE) * BLOCK_SIZE
+        y = (self.h // 2 // BLOCK_SIZE) * BLOCK_SIZE
+        
+        self.old_head = self.head = Point(x, y)
         self.snake = [
             self.head,
             Point(self.head.x - BLOCK_SIZE, self.head.y),
@@ -254,6 +259,9 @@ class SnakeGameAI:
                 )
                 self.draw_text(f"{text}: {q[i]:.2f}", x_offset, y, color)
                 y += 18
+
+        self.draw_text(f"Free Neighbours: {self.debug_info["free_neighbors"]}", x_offset, y)
+        y += 18
 
         self.draw_text(
             f"Chosen Action: {self.debug_info['action']}", x_offset, y)
